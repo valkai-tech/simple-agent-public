@@ -1,77 +1,117 @@
-# simple-agent
+# Valkai Coding Onsite: Evaluate a Search Agent
 
-A minimal LLM agent built on [LangChain Deep Agents](https://github.com/langchain-ai/deepagents). Supports OpenAI, Anthropic, and Google models out of the box. Two ways to run it — pick one:
+You are joining a working system, not building search from scratch. The repository contains an end-to-end assistant that searches a fixed Quality Management System (QMS) corpus for MedAI's MX1 portable X-ray system and returns cited answers.
 
-- [CLI guide](docs/cli.md) — interactive terminal chat
-- [Fullstack guide](docs/fullstack.md) — FastAPI server + React frontend
+Your task is to determine how well it works.
 
----
+## The exercise
 
-## Core agent
+Build a small evaluation system that runs the search assistant against representative questions, measures answer quality, and makes its shortcomings concrete.
 
-The agent lives in `src/agent/core.py` and exposes a single factory:
+By the end of the session, we should be able to run one command and see:
+
+- which cases passed or failed;
+- enough evidence to understand each result;
+- the most important shortcomings you found; and
+- what you would improve next.
+
+Use any structure or libraries you think fit. We care about the quality of the evaluation and your reasoning, not a particular framework.
+
+## Required scope
+
+Your submission should include:
+
+1. An executable eval runner.
+2. At least three cases that test meaningfully different risks. Include:
+   - one question with a known answer or source;
+   - one question that requires multiple documents or tests completeness; and
+   - one question where the correct behavior is to report missing or insufficient evidence.
+3. Automated scoring for at least two dimensions. One dimension must evaluate sources or citations.
+4. A baseline run with per-case evidence, not only one aggregate score.
+5. A short summary of at least two shortcomings, their likely causes, and which one you would address first.
+
+Good evals distinguish a plausible-looking answer from a supported answer. They also make their own blind spots visible.
+
+## Out of scope
+
+Do not spend the core exercise rebuilding ingestion, retrieval, the CLI or web chat interface, or the system prompt. Treat the supplied agent as the product under evaluation. The existing FastAPI server and React frontend are retained from the current repository but are not part of the task.
+
+If the required evaluation is complete, you may use remaining time to improve one shortcoming and show the before-and-after result. This is a stretch goal, not a requirement.
+
+## Timeline
+
+- **5 minutes:** Introduction and questions.
+- **40 minutes:** Build the first end-to-end cases and scoring path.
+- **5 minutes:** Checkpoint. Show one complete result and decide what to finish.
+- **25 minutes:** Complete the run and diagnose the baseline.
+- **15 minutes:** Walk through your approach, findings, tradeoffs, and next step.
+
+## What is provided
+
+The agent has three tools:
+
+- `search`: ranked keyword, semantic, or hybrid retrieval;
+- `read_document`: full text for a selected document and revision; and
+- `list_documents`: exhaustive document metadata for inventory questions.
+
+Answers are instructed to cite sources as `<cite>DOC_ID Rev LETTER</cite>`. A correctly formatted citation is not necessarily a correct or well-supported citation.
+
+See [SEARCH_AGENT.md](SEARCH_AGENT.md) for the architecture and programmatic interface.
+
+## Setup before the interview
+
+Setup is not part of the 90-minute exercise. Do not start the timer until the final chat check succeeds.
+
+Prerequisites:
+
+- Python 3.13 or newer;
+- the `uv` package manager;
+- `Example_QMS_-_MedAI.zip`; and
+- an Anthropic API key supplied by the interviewer.
+
+From the repository root:
+
+```bash
+uv sync --frozen
+cp .env.example .env
+# Add ANTHROPIC_API_KEY to .env
+
+mkdir -p example_qms_data
+unzip -j /path/to/Example_QMS_-_MedAI.zip \
+  'Example QMS - MedAI/*.docx' \
+  -d example_qms_data
+
+uv run index
+uv run smoke
+uv run chat --quiet
+```
+
+Ask the chat agent `Find the Bill of Materials for the MX1 system`, then exit. Once it returns a cited answer, setup is complete.
+
+The first index build parses 189 documents and downloads a local embedding model. It may take several minutes. Later runs load the saved index.
+
+## Running the agent in Python
 
 ```python
+from dotenv import load_dotenv
+
 from agent.core import make_agent
 
-agent = make_agent(
-    model_str="anthropic:claude-haiku-4-5-20251001",  # provider:model
-    system_prompt=None,                                # optional override
+load_dotenv()
+agent = make_agent()
+result = agent.invoke(
+    {"messages": [{"role": "user", "content": "Your question"}]}
 )
+
+messages = result["messages"]
+answer = messages[-1].content
 ```
 
-It wraps LangChain's `init_chat_model` + `create_deep_agent` and returns a compiled LangGraph agent that supports `.invoke()`, `.stream()`, and `.astream()`.
+The returned messages include assistant tool calls and tool-result messages. Your evals may inspect them when that produces a better diagnosis than final-answer checks alone.
 
-## Supported providers
+## Working norms
 
-| Provider  | Model string example                            | Required env var    |
-|-----------|-------------------------------------------------|---------------------|
-| Anthropic | `anthropic:claude-haiku-4-5-20251001` (default) | `ANTHROPIC_API_KEY` |
-| OpenAI    | `openai:gpt-4o`                                 | `OPENAI_API_KEY`    |
-| Google    | `google_genai:gemini-2.5-flash`                 | `GOOGLE_API_KEY`    |
-
-Any model supported by LangChain's [`init_chat_model`](https://python.langchain.com/docs/how_to/chat_models_universal_init/) works — just pass the `provider:model` string.
-
-## Prerequisites
-
-- Python 3.13+
-- [uv](https://docs.astral.sh/uv/) package manager
-- At least one LLM provider API key
-
-## Initial setup
-
-```bash
-git clone https://github.com/valkai-tech/simple-agent-public.git
-cd simple-agent-public
-uv sync
-cp .env.example .env
-# Fill in your API key(s) in .env
-```
-
-## Running evals
-
-```bash
-uv run pytest evals/ -v
-```
-
-Evals make real LLM calls (not mocked) to verify provider integration end-to-end.
-
-## Project structure
-
-```
-simple-agent/
-├── README.md               # this file — core concepts
-├── docs/
-│   ├── cli.md              # CLI usage guide
-│   └── fullstack.md        # server + frontend guide
-├── pyproject.toml          # uv project config and dependencies
-├── .env.example            # API key template
-├── src/
-│   └── agent/
-│       ├── core.py         # agent factory (shared by both approaches)
-│       ├── cli.py          # CLI entry point
-│       └── server.py       # FastAPI server entry point
-├── frontend/               # React chat UI
-└── evals/
-    └── test_agent.py       # pytest evals
-```
+- Internet access and AI coding tools are allowed and expected.
+- Ask questions when requirements or domain facts are ambiguous.
+- Keep the evaluation runnable by the next engineer.
+- Prefer a few defensible cases over a large set of weak assertions.

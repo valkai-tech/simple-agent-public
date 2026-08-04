@@ -2,6 +2,13 @@
 .env
 .venv/
 
+# Search index and data
+.chroma_index/
+example_qms_data/
+
+# Eval run logs
+eval_runs/
+
 # Python
 __pycache__/
 *.pyc
@@ -16,9 +23,5 @@ build/
 
 # OS
 .DS_Store
-
-# uv
-uv.lock
-
 # Node
 node_modules/
