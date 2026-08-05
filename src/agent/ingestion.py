@@ -31,6 +31,7 @@ from agent.utils import (
 logger = logging.getLogger(__name__)
 
 PARSE_PROGRESS_INTERVAL = 10
+DOWNLOAD_COPY_SUFFIX_RE = re.compile(r"\(\d+\)(?=\.[^.]+$|$)")
 
 
 @dataclass
@@ -298,6 +299,51 @@ def parse_all_documents(
     return docs
 
 
+def _document_revision_signature(document: ParsedDocument) -> tuple[object, ...]:
+    return (
+        document.doc_type,
+        document.doc_type_label,
+        document.title,
+        document.is_obsolete,
+        document.is_signed,
+        document.file_format,
+        document.body,
+        tuple(document.sections),
+    )
+
+
+def deduplicate_document_revisions(
+    docs: list[ParsedDocument],
+) -> list[ParsedDocument]:
+    """Collapse identical file copies and reject conflicting document revisions."""
+    grouped: dict[tuple[str, str], list[ParsedDocument]] = {}
+    for document in docs:
+        grouped.setdefault((document.doc_id, document.revision), []).append(document)
+
+    unique_documents: list[ParsedDocument] = []
+    for (doc_id, revision), copies in grouped.items():
+        reference_signature = _document_revision_signature(copies[0])
+        if any(
+            _document_revision_signature(copy) != reference_signature
+            for copy in copies[1:]
+        ):
+            filenames = ", ".join(sorted(copy.filename for copy in copies))
+            raise ValueError(
+                f"Conflicting files for {doc_id} Rev {revision}: {filenames}"
+            )
+
+        canonical_copy = min(
+            copies,
+            key=lambda copy: (
+                DOWNLOAD_COPY_SUFFIX_RE.search(copy.filename) is not None,
+                copy.filename,
+            ),
+        )
+        unique_documents.append(canonical_copy)
+
+    return unique_documents
+
+
 def determine_latest_revisions(docs: list[ParsedDocument]) -> dict[str, str]:
     """For each doc_id, determine which revision letter is the latest (highest non-obsolete)."""
     id_revisions: dict[str, list[tuple[str, bool]]] = {}
@@ -337,6 +383,7 @@ def build_index(
     Only creates one collection ("sections") for semantic/keyword search.
     Document-level metadata lives in the body store JSON.
     """
+    docs = deduplicate_document_revisions(docs)
     latest_map = determine_latest_revisions(docs)
     client = chromadb.PersistentClient(path=persist_dir)
 
@@ -412,6 +459,7 @@ def save_body_store(
     persist_dir: str = ".chroma_index",
 ) -> None:
     """Save full document bodies + metadata to a JSON file."""
+    docs = deduplicate_document_revisions(docs)
     os.makedirs(persist_dir, exist_ok=True)
     store: dict[str, BodyStoreEntry] = {}
     for doc in docs:

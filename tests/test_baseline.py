@@ -1,19 +1,22 @@
 """Deterministic contracts for the supplied search baseline."""
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from agent.ingestion import (
     ParsedDocument,
+    deduplicate_document_revisions,
     determine_latest_revisions,
     parse_all_documents,
     parse_filename,
 )
 from agent.prompts import build_prompt, build_tools_section
 from agent.search import SearchIndex
-from agent.utils import make_unique_id
+from agent.tools import create_tools
+from agent.utils import BodyStoreEntry, make_unique_id
 
 
 def _document(revision: str, *, obsolete: bool = False) -> ParsedDocument:
@@ -50,6 +53,25 @@ class FilenameOnlyExtractor:
         }
 
 
+class FixedReadIndex:
+    """Return one controlled document lookup result to the tool wrapper."""
+
+    def __init__(
+        self,
+        document: BodyStoreEntry | None,
+        warning: str | None,
+    ) -> None:
+        self._document = document
+        self._warning = warning
+
+    def read_document(
+        self,
+        _doc_id: str,
+        revision: str | None = None,
+    ) -> tuple[BodyStoreEntry | None, str | None]:
+        return self._document, self._warning
+
+
 def test_medai_filename_parses_project_and_status() -> None:
     parsed = parse_filename(
         "VVPR-P01-152- Pediatric Filtration Verification Protocol and "
@@ -71,6 +93,41 @@ def test_duplicate_download_suffix_preserves_document_identity() -> None:
     assert parsed is not None
     assert parsed["doc_id"] == "VVPR-SWV-027"
     assert parsed["revision"] == "B"
+
+
+def test_duplicate_document_revisions_keep_the_canonical_copy() -> None:
+    canonical = replace(
+        _document("B"),
+        body="same extracted text",
+        sections=["same extracted text"],
+    )
+    downloaded_copy = replace(
+        canonical,
+        filename="RSK-P01-010 - MX1 Risk Assessment_B(1).docx",
+        filepath="/tmp/downloaded-copy.docx",
+    )
+
+    documents = deduplicate_document_revisions([downloaded_copy, canonical])
+
+    assert documents == [canonical]
+
+
+def test_conflicting_duplicate_document_revisions_are_rejected() -> None:
+    canonical = replace(
+        _document("B"),
+        body="canonical text",
+        sections=["canonical text"],
+    )
+    conflicting_copy = replace(
+        canonical,
+        filename="RSK-P01-010 - MX1 Risk Assessment_B(1).docx",
+        filepath="/tmp/conflicting-copy.docx",
+        body="different text",
+        sections=["different text"],
+    )
+
+    with pytest.raises(ValueError, match="Conflicting files for RSK-P01-010 Rev B"):
+        deduplicate_document_revisions([canonical, conflicting_copy])
 
 
 def test_parsing_reports_every_ten_files_and_final_count(
@@ -106,6 +163,43 @@ def test_latest_revision_excludes_obsolete_revision() -> None:
     ]
 
     assert determine_latest_revisions(documents) == {"RSK-P01-010": "B"}
+
+
+@pytest.mark.parametrize(
+    ("document", "terminal_message"),
+    [
+        (None, "not found"),
+        (
+            BodyStoreEntry(
+                doc_id="RSK-P01-010",
+                doc_type="RSK",
+                doc_type_label="Risk Management",
+                title="MX1 Risk Assessment",
+                revision="A",
+                is_latest=True,
+                is_obsolete=False,
+                is_signed=False,
+                file_format="docx",
+                filename="RSK-P01-010 - MX1 Risk Assessment_A.docx",
+                has_body=False,
+                body="",
+            ),
+            "exists but has no extractable text content",
+        ),
+    ],
+)
+def test_read_document_keeps_fuzzy_warning_on_terminal_results(
+    document: BodyStoreEntry | None,
+    terminal_message: str,
+) -> None:
+    warning = "No exact match for 'RSK-P01-01'. Showing closest match: RSK-P01-010."
+    index = FixedReadIndex(document, warning)
+    read_document = create_tools(index)[1]
+
+    result = read_document.invoke({"doc_id": "RSK-P01-01", "revision": "C"})
+
+    assert result.startswith(f"NOTE: {warning}")
+    assert terminal_message in result
 
 
 def test_unique_id_includes_revision() -> None:

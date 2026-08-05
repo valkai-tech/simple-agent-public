@@ -187,6 +187,8 @@ def create_tools(index: SearchIndex) -> list:
             result = (
                 f"Document '{doc_id}' (revision: {revision or 'latest'}) not found."
             )
+            if fuzzy_warning:
+                result = f"NOTE: {fuzzy_warning}\n{result}"
             _log_tool_output(result)
             return result
 
@@ -196,6 +198,8 @@ def create_tools(index: SearchIndex) -> list:
                 f"Document {doc['doc_id']} Rev {doc['revision']} ({doc.get('filename', '')}) "
                 f"exists but has no extractable text content."
             )
+            if fuzzy_warning:
+                result = f"NOTE: {fuzzy_warning}\n{result}"
             _log_tool_output(result)
             return result
 
