@@ -30,6 +30,8 @@ from agent.utils import (
 
 logger = logging.getLogger(__name__)
 
+PARSE_PROGRESS_INTERVAL = 10
+
 
 @dataclass
 class ParsedDocument:
@@ -257,37 +259,40 @@ def parse_all_documents(
         extractor = QMSFilenameExtractor()
 
     docs: list[ParsedDocument] = []
+    entries = sorted(entry for entry in data_path.iterdir() if entry.is_file())
+    total_entries = len(entries)
 
-    for entry in sorted(data_path.iterdir()):
+    for processed, entry in enumerate(entries, start=1):
         meta = extractor.parse(entry.name)
-        if meta is None:
-            continue
+        if meta is not None:
+            filepath = str(entry)
+            body = ""
+            sections: list[str] = []
 
-        filepath = str(entry)
-        body = ""
-        sections: list[str] = []
+            if meta["file_format"] == "docx":
+                body, sections = extract_docx_text(filepath)
+            elif meta["file_format"] == "xlsx":
+                body, sections = extract_xlsx_text(filepath)
 
-        if meta["file_format"] == "docx":
-            body, sections = extract_docx_text(filepath)
-        elif meta["file_format"] == "xlsx":
-            body, sections = extract_xlsx_text(filepath)
-
-        docs.append(
-            ParsedDocument(
-                doc_id=meta["doc_id"],
-                doc_type=meta["doc_type"],
-                doc_type_label=meta["doc_type_label"],
-                title=meta["title"],
-                revision=meta["revision"],
-                is_obsolete=meta["is_obsolete"],
-                is_signed=meta["is_signed"],
-                file_format=meta["file_format"],
-                filename=meta["filename"],
-                filepath=filepath,
-                body=body,
-                sections=sections,
+            docs.append(
+                ParsedDocument(
+                    doc_id=meta["doc_id"],
+                    doc_type=meta["doc_type"],
+                    doc_type_label=meta["doc_type_label"],
+                    title=meta["title"],
+                    revision=meta["revision"],
+                    is_obsolete=meta["is_obsolete"],
+                    is_signed=meta["is_signed"],
+                    file_format=meta["file_format"],
+                    filename=meta["filename"],
+                    filepath=filepath,
+                    body=body,
+                    sections=sections,
+                )
             )
-        )
+
+        if processed % PARSE_PROGRESS_INTERVAL == 0 or processed == total_entries:
+            logger.info("Parsing documents: %d/%d", processed, total_entries)
 
     logger.info("Parsed %d documents from %s", len(docs), data_dir)
     return docs

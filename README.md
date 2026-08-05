@@ -1,66 +1,22 @@
-# Valkai Coding Onsite: Evaluate a Search Agent
+# Valkai Coding Onsite: Evaluate and Improve a Search Agent
 
-You are joining a working system, not building search from scratch. The repository contains an end-to-end assistant that searches a fixed Quality Management System (QMS) corpus for MedAI's MX1 portable X-ray system and returns cited answers.
+You are joining a working search system. The repository contains an end-to-end assistant that searches a fixed Quality Management System (QMS) corpus for MedAI's MX1 portable X-ray system and returns cited answers.
 
-Your task is to determine how well it works.
+Your task is to measure how well it works, find an important shortcoming, and improve it.
 
-## The exercise
+## Schedule
 
-Build a small evaluation system that runs the search assistant against representative questions, measures answer quality, and makes its shortcomings concrete.
+The 90-minute session includes setup:
 
-By the end of the session, we should be able to run one command and see:
+- **5 minutes:** Introduction and setup kickoff.
+- **35 minutes:** Inspect the agent, build the baseline evaluation, and choose a failure to improve.
+- **5 minutes:** Checkpoint.
+- **30 minutes:** Complete the baseline, improve the system, and rerun the evaluation.
+- **15 minutes:** Walk through your approach, evidence, change, and next steps.
 
-- which cases passed or failed;
-- enough evidence to understand each result;
-- the most important shortcomings you found; and
-- what you would improve next.
+Normal corpus extraction, indexing, smoke testing, and the first agent run are part of the exercise. Ask the interviewer for help with credential, dependency, or environment failures. Those failures are not interview signal.
 
-Use any structure or libraries you think fit. We care about the quality of the evaluation and your reasoning, not a particular framework.
-
-## Required scope
-
-Your submission should include:
-
-1. An executable eval runner.
-2. At least three cases that test meaningfully different risks. Include:
-   - one question with a known answer or source;
-   - one question that requires multiple documents or tests completeness; and
-   - one question where the correct behavior is to report missing or insufficient evidence.
-3. Automated scoring for at least two dimensions. One dimension must evaluate sources or citations.
-4. A baseline run with per-case evidence, not only one aggregate score.
-5. A short summary of at least two shortcomings, their likely causes, and which one you would address first.
-
-Good evals distinguish a plausible-looking answer from a supported answer. They also make their own blind spots visible.
-
-## Out of scope
-
-Do not spend the core exercise rebuilding ingestion, retrieval, the CLI or web chat interface, or the system prompt. Treat the supplied agent as the product under evaluation. The existing FastAPI server and React frontend are retained from the current repository but are not part of the task.
-
-If the required evaluation is complete, you may use remaining time to improve one shortcoming and show the before-and-after result. This is a stretch goal, not a requirement.
-
-## Timeline
-
-- **5 minutes:** Introduction and questions.
-- **40 minutes:** Build the first end-to-end cases and scoring path.
-- **5 minutes:** Checkpoint. Show one complete result and decide what to finish.
-- **25 minutes:** Complete the run and diagnose the baseline.
-- **15 minutes:** Walk through your approach, findings, tradeoffs, and next step.
-
-## What is provided
-
-The agent has three tools:
-
-- `search`: ranked keyword, semantic, or hybrid retrieval;
-- `read_document`: full text for a selected document and revision; and
-- `list_documents`: exhaustive document metadata for inventory questions.
-
-Answers are instructed to cite sources as `<cite>DOC_ID Rev LETTER</cite>`. A correctly formatted citation is not necessarily a correct or well-supported citation.
-
-See [SEARCH_AGENT.md](SEARCH_AGENT.md) for the architecture and programmatic interface.
-
-## Setup before the interview
-
-Setup is not part of the 90-minute exercise. Do not start the timer until the final chat check succeeds.
+## Start here
 
 Prerequisites:
 
@@ -83,12 +39,71 @@ unzip -j /path/to/Example_QMS_-_MedAI.zip \
 
 uv run index
 uv run smoke
-uv run chat --quiet
+uv run chat
 ```
 
-Ask the chat agent `Find the Bill of Materials for the MX1 system`, then exit. Once it returns a cited answer, setup is complete.
+Ask the chat agent:
 
-The first index build parses 189 documents and downloads a local embedding model. It may take several minutes. Later runs load the saved index.
+> Find the latest Bill of Materials for the MX1 system and summarize what it covers.
+
+Notice which tools it chooses, what evidence they return, and how the final citations relate to that evidence. Exit the chat after the answer. This first trace is your starting point for the evaluation.
+
+The first index build parses 189 documents and downloads a local embedding model. Later runs load the saved index.
+
+## Representative user questions
+
+These illustrate how people use this search system. You may use them directly, refine them, or create alternatives. Query originality is not evaluated.
+
+- Find the latest MX1 Bill of Materials and summarize what it covers.
+- List every engineering change request in the QMS and its status.
+- What verification protocols exist for electrical safety?
+- Trace electrical-leakage risk from the risk records to verification evidence.
+- What changed between two revisions of an MX1 document?
+- Does the corpus contain a 510(k) summary for the device?
+- Does the Design History File provide enough evidence to support a complete design-control coverage claim?
+
+## Required outcome
+
+By the end of the session, produce:
+
+1. An executable evaluation runner.
+2. At least three cases that test meaningfully different risks:
+   - one question with a known answer or source;
+   - one question that requires multiple documents or tests completeness; and
+   - one question where the correct behavior is to report missing or insufficient evidence.
+3. Automated scoring for at least two quality dimensions. One dimension must evaluate sources or citations.
+4. A baseline run with per-case answers, scores, tool evidence, and useful failure details.
+5. At least two evidence-backed shortcomings, their likely causes, and a priority.
+6. One improvement to the supplied system that addresses a measured failure.
+7. A before-and-after result for the affected case, plus any regression risk or remaining uncertainty.
+
+The improvement may change retrieval, tool behavior, agent instructions, answer synthesis, citation handling, or another relevant layer. The change does not need to succeed. A well-supported hypothesis, bounded experiment, and correct interpretation are more useful than an unmeasured change that happens to look better.
+
+We should be able to run one command and see the per-case evidence. Prefer a few defensible checks over a large set of weak assertions.
+
+## Checkpoint
+
+At the checkpoint, be ready to show one complete case and answer:
+
+- What does the current score measure?
+- What could it incorrectly pass?
+- Is the most interesting failure in retrieval, tool selection, synthesis, or citation use?
+- What is the smallest change that could improve it?
+- How will you measure the change and notice a regression?
+
+If the first case is not running, reduce scope to one script, three literal cases, and two checks.
+
+## Supplied system
+
+The agent has three tools:
+
+- `search`: ranked keyword, semantic, or hybrid retrieval;
+- `read_document`: full extracted text for a selected document and revision; and
+- `list_documents`: exhaustive document metadata for inventory questions.
+
+Answers are instructed to cite sources as `<cite>DOC_ID Rev LETTER</cite>`. Correct citation syntax does not prove that the document exists, was retrieved, supports the nearby claim, or covers every factual claim.
+
+See [SEARCH_AGENT.md](SEARCH_AGENT.md) for the architecture and programmatic interface. The retained FastAPI server and React frontend are not part of the exercise.
 
 ## Running the agent in Python
 
@@ -107,11 +122,12 @@ messages = result["messages"]
 answer = messages[-1].content
 ```
 
-The returned messages include assistant tool calls and tool-result messages. Your evals may inspect them when that produces a better diagnosis than final-answer checks alone.
+The returned messages include assistant tool calls and tool-result messages. Treat those messages as product behavior. They can distinguish a retrieval failure from a final-answer failure.
 
 ## Working norms
 
 - Internet access and AI coding tools are allowed and expected.
 - Ask questions when requirements or domain facts are ambiguous.
+- Establish a baseline before changing the supplied system.
 - Keep the evaluation runnable by the next engineer.
-- Prefer a few defensible cases over a large set of weak assertions.
+- Explain the limits of every score you rely on.

@@ -1,6 +1,16 @@
 """Deterministic contracts for the supplied search baseline."""
 
-from agent.ingestion import ParsedDocument, determine_latest_revisions, parse_filename
+import logging
+from pathlib import Path
+
+import pytest
+
+from agent.ingestion import (
+    ParsedDocument,
+    determine_latest_revisions,
+    parse_all_documents,
+    parse_filename,
+)
 from agent.prompts import build_prompt, build_tools_section
 from agent.search import SearchIndex
 from agent.utils import make_unique_id
@@ -21,6 +31,23 @@ def _document(revision: str, *, obsolete: bool = False) -> ParsedDocument:
         body="",
         sections=[],
     )
+
+
+class FilenameOnlyExtractor:
+    """Return valid metadata without reading file contents."""
+
+    def parse(self, filename: str) -> dict[str, object]:
+        return {
+            "doc_id": filename,
+            "doc_type": "TEST",
+            "doc_type_label": "Test Document",
+            "title": filename,
+            "revision": "A",
+            "is_obsolete": False,
+            "is_signed": False,
+            "file_format": "unknown",
+            "filename": filename,
+        }
 
 
 def test_medai_filename_parses_project_and_status() -> None:
@@ -44,6 +71,31 @@ def test_duplicate_download_suffix_preserves_document_identity() -> None:
     assert parsed is not None
     assert parsed["doc_id"] == "VVPR-SWV-027"
     assert parsed["revision"] == "B"
+
+
+def test_parsing_reports_every_ten_files_and_final_count(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    for number in range(12):
+        (tmp_path / f"document-{number:02d}").touch()
+
+    with caplog.at_level(logging.INFO, logger="agent.ingestion"):
+        documents = parse_all_documents(
+            str(tmp_path),
+            extractor=FilenameOnlyExtractor(),
+        )
+
+    progress_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("Parsing documents:")
+    ]
+    assert len(documents) == 12
+    assert progress_messages == [
+        "Parsing documents: 10/12",
+        "Parsing documents: 12/12",
+    ]
 
 
 def test_latest_revision_excludes_obsolete_revision() -> None:
