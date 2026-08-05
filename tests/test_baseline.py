@@ -129,6 +129,15 @@ def test_prompt_uses_current_project_examples() -> None:
     assert "<cite>" in prompt
 
 
+def test_additional_prompt_instructions_take_final_precedence() -> None:
+    prompt = build_prompt(
+        tool_names=["search", "read_document", "list_documents"],
+        additional_instructions=["Keep the final answer under 1,000 characters."],
+    )
+
+    assert prompt.endswith("Keep the final answer under 1,000 characters.")
+
+
 def test_snippet_selection_prioritizes_query_overlap() -> None:
     snippets = [
         "[DOC Rev A: Title | Type]\nGeneral device description.",

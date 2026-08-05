@@ -138,9 +138,9 @@ def build_prompt(
     sections.append(CITATIONS)
     sections.append(ADDITIONAL_INSTRUCTIONS)
 
+    sections.append(RESPONSE_QUALITY)
+
     if additional_instructions:
         sections.extend(additional_instructions)
-
-    sections.append(RESPONSE_QUALITY)
 
     return "\n\n".join(sections)
