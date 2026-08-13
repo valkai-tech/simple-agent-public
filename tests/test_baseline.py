@@ -202,6 +202,34 @@ def test_concurrent_cold_starts_build_the_index_once(
     assert ingest_calls == [str(index_dir)]
 
 
+def test_interrupted_forced_build_clears_the_ready_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index_dir = tmp_path / "index"
+    index_dir.mkdir()
+    marker = index_dir / "body_store.json"
+    marker.write_text("stale")
+    attempts = 0
+
+    def flaky_ingest(_data_dir: str, persist_dir: str) -> None:
+        nonlocal attempts
+        attempts += 1
+        assert not marker.exists()
+        if attempts == 1:
+            raise RuntimeError("interrupted")
+        marker.write_text("{}")
+
+    monkeypatch.setattr(core, "ingest", flaky_ingest)
+    monkeypatch.setattr(core, "SearchIndex", lambda persist_dir: persist_dir)
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        core.ensure_index("data", str(index_dir), force=True)
+
+    assert core.ensure_index("data", str(index_dir)) == str(index_dir)
+    assert attempts == 2
+
+
 @pytest.mark.parametrize(
     ("extra_args", "expected_force"),
     [([], False), (["--force"], True)],

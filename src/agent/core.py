@@ -35,6 +35,8 @@ def ensure_index(
     """
     with index_lock(index_dir):
         body_store_path = os.path.join(index_dir, "body_store.json")
+        if force and os.path.exists(body_store_path):
+            os.remove(body_store_path)
         if os.path.exists(body_store_path) and not force:
             logger.info("Loading existing index from %s", index_dir)
         else:
