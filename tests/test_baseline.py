@@ -1,11 +1,16 @@
 """Deterministic contracts for the supplied search baseline."""
 
 import logging
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+import agent.core as core
+import agent.index_cli as index_cli
 from agent.ingestion import (
     ParsedDocument,
     deduplicate_document_revisions,
@@ -152,6 +157,100 @@ def test_parsing_reports_every_ten_files_and_final_count(
     assert progress_messages == [
         "Parsing documents: 10/12",
         "Parsing documents: 12/12",
+    ]
+
+
+def test_concurrent_cold_starts_build_the_index_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index_dir = tmp_path / "index"
+    build_started = threading.Event()
+    allow_build_to_finish = threading.Event()
+    second_call_started = threading.Event()
+    ingest_calls: list[str] = []
+
+    def fake_ingest(_data_dir: str, persist_dir: str) -> None:
+        ingest_calls.append(persist_dir)
+        build_started.set()
+        assert allow_build_to_finish.wait(timeout=5)
+        index_path = Path(persist_dir)
+        index_path.mkdir(parents=True, exist_ok=True)
+        (index_path / "body_store.json").write_text("{}")
+
+    def fake_search_index(persist_dir: str) -> str:
+        assert (Path(persist_dir) / "body_store.json").exists()
+        return persist_dir
+
+    def initialize_after_signaling() -> str:
+        second_call_started.set()
+        return core.ensure_index("data", str(index_dir))
+
+    monkeypatch.setattr(core, "ingest", fake_ingest)
+    monkeypatch.setattr(core, "SearchIndex", fake_search_index)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(core.ensure_index, "data", str(index_dir))
+        assert build_started.wait(timeout=5)
+        second = executor.submit(initialize_after_signaling)
+        assert second_call_started.wait(timeout=5)
+        allow_build_to_finish.set()
+
+        assert first.result(timeout=5) == str(index_dir)
+        assert second.result(timeout=5) == str(index_dir)
+
+    assert ingest_calls == [str(index_dir)]
+
+
+def test_interrupted_forced_build_clears_the_ready_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index_dir = tmp_path / "index"
+    index_dir.mkdir()
+    marker = index_dir / "body_store.json"
+    marker.write_text("stale")
+    attempts = 0
+
+    def flaky_ingest(_data_dir: str, persist_dir: str) -> None:
+        nonlocal attempts
+        attempts += 1
+        assert not marker.exists()
+        if attempts == 1:
+            raise RuntimeError("interrupted")
+        marker.write_text("{}")
+
+    monkeypatch.setattr(core, "ingest", flaky_ingest)
+    monkeypatch.setattr(core, "SearchIndex", lambda persist_dir: persist_dir)
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        core.ensure_index("data", str(index_dir), force=True)
+
+    assert core.ensure_index("data", str(index_dir)) == str(index_dir)
+    assert attempts == 2
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected_force"),
+    [([], False), (["--force"], True)],
+)
+def test_index_cli_rebuild_requires_force_flag(
+    extra_args: list[str],
+    expected_force: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(index_cli, "ensure_index", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["index", "--data-dir", "data", "--index-dir", "index", *extra_args],
+    )
+
+    index_cli.main()
+
+    assert calls == [
+        {"data_dir": "data", "index_dir": "index", "force": expected_force}
     ]
 
 
