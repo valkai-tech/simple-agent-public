@@ -9,6 +9,7 @@ from langchain.chat_models import init_chat_model
 from deepagents import create_deep_agent
 
 from agent.ingestion import ingest
+from agent.index_lock import index_lock
 from agent.prompts import build_prompt
 from agent.search import SearchIndex
 from agent.tools import create_tools
@@ -32,15 +33,16 @@ def ensure_index(
     If the index already exists on disk and force=False, loads it.
     Otherwise, runs the full ingestion pipeline.
     """
-    body_store_path = os.path.join(index_dir, "body_store.json")
-    if os.path.exists(body_store_path) and not force:
-        logger.info("Loading existing index from %s", index_dir)
-    else:
-        logger.info("Building index from %s ...", data_dir)
-        ingest(data_dir, persist_dir=index_dir)
-        logger.info("Index built.")
+    with index_lock(index_dir):
+        body_store_path = os.path.join(index_dir, "body_store.json")
+        if os.path.exists(body_store_path) and not force:
+            logger.info("Loading existing index from %s", index_dir)
+        else:
+            logger.info("Building index from %s ...", data_dir)
+            ingest(data_dir, persist_dir=index_dir)
+            logger.info("Index built.")
 
-    return SearchIndex(persist_dir=index_dir)
+        return SearchIndex(persist_dir=index_dir)
 
 
 def make_agent(

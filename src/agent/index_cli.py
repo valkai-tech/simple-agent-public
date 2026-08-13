@@ -22,11 +22,16 @@ def main():
         default=DEFAULT_INDEX_DIR,
         help="Path to store the search index",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Rebuild the index even if a prepared index already exists",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-    ensure_index(data_dir=args.data_dir, index_dir=args.index_dir, force=True)
+    ensure_index(data_dir=args.data_dir, index_dir=args.index_dir, force=args.force)
     print("Done.")
 
 

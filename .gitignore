@@ -4,6 +4,7 @@
 
 # Search index and data
 .chroma_index/
+.chroma_index.lock
 example_qms_data/
 
 # Eval run logs

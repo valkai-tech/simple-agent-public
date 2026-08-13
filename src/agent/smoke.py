@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 
+from agent.index_lock import index_lock
 from agent.search import SearchIndex
 from agent.utils import DEFAULT_INDEX_DIR
 
@@ -18,16 +19,17 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    index = SearchIndex(args.index_dir)
-    documents = index.list_all_documents()
-    unique_document_ids = {document["doc_id"] for document in documents}
-    results = index.search(
-        "MX1 top-level Bill of Materials",
-        mode="hybrid",
-        doc_type="BOM",
-        latest_only=True,
-        n_results=5,
-    )
+    with index_lock(args.index_dir):
+        index = SearchIndex(args.index_dir)
+        documents = index.list_all_documents()
+        unique_document_ids = {document["doc_id"] for document in documents}
+        results = index.search(
+            "MX1 top-level Bill of Materials",
+            mode="hybrid",
+            doc_type="BOM",
+            latest_only=True,
+            n_results=5,
+        )
 
     if not documents or not results:
         raise SystemExit("Index check failed: the corpus or retrieval index is empty")
