@@ -22,6 +22,7 @@ dependencies = [
 
 [project.scripts]
 chat = "agent.cli:main"
+eval = "agent.eval.runner:main"
 index = "agent.index_cli:main"
 serve = "agent.server:main"
 smoke = "agent.smoke:main"

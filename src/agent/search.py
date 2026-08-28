@@ -7,6 +7,7 @@ tool wrappers live in tools.py.
 from __future__ import annotations
 
 import json
+import re
 from typing import Literal
 
 import chromadb
@@ -134,12 +135,62 @@ class SearchIndex:
         matches.sort(key=lambda x: x[1]["revision"])
         return matches[-1][1], None
 
+    # Trailing run of digits in a doc_id (the NUMBER segment).
+    _DOC_ID_TRAILING_NUMBER = re.compile(r"(\d+)$")
+
+    @staticmethod
+    def _doc_id_project_and_number(doc_id: str) -> tuple[str | None, str | None]:
+        """Split a doc_id into its PROJECT and trailing NUMBER for cross-checking.
+
+        Corpus ids look like ``{TYPE}-{PROJECT}-{NUMBER}`` (e.g. ``VVPR-P01-081``,
+        ``MEMO-P00-159``, ``3P-P01-32``), but some omit the project segment
+        (``BOM-055``, ``IFU-MX1``). Returns ``(project, number)`` where:
+
+          * PROJECT is the middle segment (``P01``/``P00``/``SWV``/...),
+            upper-cased, or None when the id has no project segment.
+          * NUMBER is the trailing digit run, normalized (leading zeros
+            stripped) so ``081`` and ``81`` compare equal, or None when there
+            is no trailing number.
+        """
+        segments = doc_id.split("-")
+        project = segments[1].upper() if len(segments) >= 3 else None
+        match = SearchIndex._DOC_ID_TRAILING_NUMBER.search(doc_id)
+        number = str(int(match.group(1))) if match else None
+        return project, number
+
     def _fuzzy_find_doc_id(self, doc_id: str) -> str | None:
-        """Find the closest doc_id using fuzzy string matching."""
-        all_doc_ids = list({v["doc_id"] for v in self._body_store.values()})
+        """Find the closest doc_id WITHOUT crossing project or number boundaries.
+
+        Fuzzy matching exists here only to recover typos in a document's TYPE
+        or title portion (e.g. ``VVPRR-P01-081`` -> ``VVPR-P01-081``). It must
+        never let a lookup drift to a *different* document, because two failure
+        modes are both silent and dangerous:
+
+          * Predecessor pointers: 19 documents cite ``P00`` predecessor ids in
+            their bodies (e.g. ``MEMO-P00-159``), yet the corpus holds zero P00
+            documents. A bare ``fuzz.ratio`` scores the same-numbered P01 doc
+            ~92, so an agent chasing a ``VVPR-P00-081`` reference would silently
+            read ``VVPR-P01-081`` in its place -- a different, wrong document.
+          * Adjacent ids: ``VVPR-P01-080`` (nonexistent) sits one digit from the
+            real ``VVPR-P01-081``, and ``VVPR-P01-100`` from ``VVPR-P01-150``; a
+            bare ratio match would substitute the neighbor.
+
+        So we restrict fuzzy candidates to ids that share the query's PROJECT
+        segment AND trailing NUMBER exactly, letting the score cutoff absorb
+        only TYPE/title typos. If nothing matches, we return None (not found)
+        rather than hand back a cross-project or adjacent substitution.
+        """
+        query_key = self._doc_id_project_and_number(doc_id)
+        candidates = [
+            candidate_id
+            for candidate_id in {v["doc_id"] for v in self._body_store.values()}
+            if self._doc_id_project_and_number(candidate_id) == query_key
+        ]
+        if not candidates:
+            return None
         result = process.extractOne(
             doc_id,
-            all_doc_ids,
+            candidates,
             scorer=fuzz.ratio,
             score_cutoff=self.FUZZY_MATCH_THRESHOLD,
         )

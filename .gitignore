@@ -7,8 +7,15 @@
 .chroma_index.lock
 example_qms_data/
 
-# Eval run logs
+# Eval run outputs and artifacts (regenerable)
 eval_runs/
+eval_*.json
+eval_*.log
+eval_*.trace.json
+
+# Alternate/experimental search indexes
+.chroma_index_fixed/
+.chroma_index_fixed.lock
 
 # Python
 __pycache__/
