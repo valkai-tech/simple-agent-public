@@ -78,3 +78,32 @@ Already-solved (don't rebuild): metadata IS lifted into section metadata and
 search filters on doc_type/latest_only; base_id grouping exists; extraction IS
 table-aware (reads tables, doesn't parse them into fields). Filename-vs-internal
 revision disagreement overstated (no real tip disagreement found).
+
+## Follow-ups (open, prioritized)
+
+1. **`claim_support` earns little on this agent.** On the final run it caught
+   nothing real (14/15; the one fail was a coarse-attribution artifact). It only
+   checks numeric claims against a large haystack, so a wrong number can appear
+   elsewhere and slip through; prose support is punted to `llm_judge`. Options:
+   narrow it to a few high-value numeric facts (e.g. the dose criterion), or lean
+   on `llm_judge` for accuracy and demote claim_support to a spot check.
+2. **Run `llm_judge` in a scored run.** It is off by default and absent from the
+   final scorecard, so the semantic/faithfulness signal is unmeasured. Turn it on
+   (`EVAL_LLM_JUDGE=1`) over the saved `--trace` and record its numbers.
+3. **S3 sufficiency hedging (agent).** `dhf_coverage` can assert completeness
+   instead of flagging gaps. Fix is a prompt instruction to distinguish "evidence
+   exists" from "sufficient" + a stance-based insufficient oracle (not substring).
+4. **Relax `missing_p00_document` `gold_absent`.** It forbids any mention of the
+   P01 successor, but the agent transparently labels it as the successor. Allow a
+   labeled mention; only fail a silent substitution.
+5. **Finish the obsolete fix.** Only the `ingestion.py` is_latest part shipped.
+   Add the default `is_obsolete` filter to `_build_filter`/`search` with a
+   named-doc override so obsolete is excluded by default, not just de-flagged.
+6. **Latency instrumentation + improvement.** Retrieval is ~free; wall-clock is
+   sequential model round-trips. Add per-case wall-clock + per-tool seconds to the
+   trace, then measure a latency change (trim `MAX_READ_CHARS` 30k→~12k;
+   discourage near-duplicate searches). Currently no timing is captured.
+7. **Eval robustness: a case can hang the run.** `bom079_version_anomaly` spawns
+   a nested sub-agent that once hung the runner for ~72 min. Add a per-case
+   wall-clock timeout (and/or lower the nested recursion cap) so one case can't
+   stall the suite.
