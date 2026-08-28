@@ -9,7 +9,6 @@ example_qms_data/
 
 # Eval run outputs and artifacts (regenerable)
 eval_runs/
-eval_*.json
 eval_*.log
 eval_*.trace.json
 
