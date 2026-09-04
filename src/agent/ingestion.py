@@ -8,22 +8,27 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing
 import os
 import re
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Iterable, Protocol
 
 import chromadb
-from docx import Document as DocxDocument
-from openpyxl import load_workbook
+from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
 
+from agent.extraction import extract_text
+from agent.extraction import extract_docx_text as extract_docx_text
+from agent.extraction import extract_xlsx_text as extract_xlsx_text
 from agent.utils import (
     CHROMA_MAX_CHARS,
-    CHUNK_MAX_CHARS,
     DOC_TYPE_LABELS,
     INDEX_BATCH_SIZE,
     MIN_SECTION_CHARS,
+    PARSE_WORKER_THRESHOLD,
     BodyStoreEntry,
     make_unique_id,
 )
@@ -129,128 +134,66 @@ def parse_filename(filename: str) -> dict | None:
     return QMSFilenameExtractor().parse(filename)
 
 
-def extract_docx_text(filepath: str) -> tuple[str, list[str]]:
-    """Extract text from a .docx file. Returns (full_body, sections).
+def _extract_all_texts(
+    tasks: list[tuple[str, str]],
+    total_entries: int,
+    max_workers: int | None = None,
+) -> list[tuple[str, list[str]]]:
+    """Extract text for every task, in parallel processes when it pays off.
 
-    Sections are split on headings. Tables are appended as separate sections.
+    Document parsing is CPU-bound inside lxml/openpyxl, so worker processes
+    scale with cores while threads do not.
     """
+    if max_workers is None:
+        max_workers = min(os.cpu_count() or 1, 8)
+
+    def _serial() -> Iterable[tuple[str, list[str]]]:
+        return (extract_text(task) for task in tasks)
+
+    def _with_progress(
+        results: Iterable[tuple[str, list[str]]],
+    ) -> list[tuple[str, list[str]]]:
+        collected = []
+        for processed, result in enumerate(results, start=1):
+            collected.append(result)
+            if processed % PARSE_PROGRESS_INTERVAL == 0 or processed == total_entries:
+                logger.info("Parsing documents: %d/%d", processed, total_entries)
+        return collected
+
+    if max_workers <= 1 or len(tasks) < PARSE_WORKER_THRESHOLD:
+        return _with_progress(_serial())
+
+    if getattr(multiprocessing.current_process(), "_inheriting", False):
+        # A spawned worker importing the caller's __main__ module: starting
+        # more workers here would recurse, so let the pool in the parent break
+        # and fall back to serial parsing there.
+        raise RuntimeError(
+            "parse_all_documents() ran while importing __main__ in a worker "
+            'process; call it under `if __name__ == "__main__":`'
+        )
+
     try:
-        doc = DocxDocument(filepath)
-    except Exception as e:
-        logger.error("Failed to parse docx %s: %s", filepath, e)
-        return "", []
-
-    paragraphs: list[str] = []
-    sections: list[str] = []
-    current_section_lines: list[str] = []
-
-    for para in doc.paragraphs:
-        text = para.text.strip()
-        if not text:
-            continue
-
-        paragraphs.append(text)
-
-        style_name = para.style.name if para.style else ""
-        is_heading = style_name.startswith("Heading") or style_name.startswith("Title")
-
-        if is_heading:
-            if current_section_lines:
-                sections.append("\n".join(current_section_lines))
-            current_section_lines = [text]
-        else:
-            current_section_lines.append(text)
-
-    if current_section_lines:
-        sections.append("\n".join(current_section_lines))
-
-    for table in doc.tables:
-        table_rows = []
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells]
-            row_text = " | ".join(cells)
-            if row_text.strip(" |"):
-                table_rows.append(row_text)
-        if table_rows:
-            table_text = "\n".join(table_rows)
-            paragraphs.append(table_text)
-            sections.append(table_text)
-
-    full_body = "\n\n".join(paragraphs)
-
-    if not sections and full_body:
-        sections = _chunk_text(full_body)
-
-    return full_body, sections
-
-
-def extract_xlsx_text(filepath: str) -> tuple[str, list[str]]:
-    """Extract text from an .xlsx file. Returns (full_body, sections).
-
-    Each sheet becomes its own section.
-    """
-    try:
-        wb = load_workbook(filepath, read_only=True, data_only=True)
-    except Exception as e:
-        logger.error("Failed to parse xlsx %s: %s", filepath, e)
-        return "", []
-
-    all_text_parts: list[str] = []
-    sections: list[str] = []
-
-    for sheet_name in wb.sheetnames:
-        sheet = wb[sheet_name]
-        sheet_lines = [f"[Sheet: {sheet_name}]"]
-
-        for row in sheet.iter_rows(values_only=True):
-            cells = [str(c).strip() if c is not None else "" for c in row]
-            row_text = " | ".join(c for c in cells if c)
-            if row_text:
-                sheet_lines.append(row_text)
-
-        sheet_text = "\n".join(sheet_lines)
-        all_text_parts.append(sheet_text)
-        sections.append(sheet_text)
-
-    wb.close()
-    full_body = "\n\n".join(all_text_parts)
-
-    if not sections and full_body:
-        sections = _chunk_text(full_body)
-
-    return full_body, sections
-
-
-def _chunk_text(text: str, max_chars: int = CHUNK_MAX_CHARS) -> list[str]:
-    """Split text into roughly equal chunks at paragraph boundaries."""
-    paragraphs = text.split("\n\n")
-    chunks: list[str] = []
-    current_chunk: list[str] = []
-    current_len = 0
-
-    for para in paragraphs:
-        if current_len + len(para) > max_chars and current_chunk:
-            chunks.append("\n\n".join(current_chunk))
-            current_chunk = []
-            current_len = 0
-        current_chunk.append(para)
-        current_len += len(para)
-
-    if current_chunk:
-        chunks.append("\n\n".join(current_chunk))
-
-    return chunks
+        with ProcessPoolExecutor(max_workers=max_workers) as pool:
+            return _with_progress(pool.map(extract_text, tasks, chunksize=4))
+    except (OSError, RuntimeError, BrokenProcessPool) as e:
+        # Worker processes are unavailable, for example when the caller starts
+        # parsing at import time on a spawn platform.
+        logger.warning("Parallel parsing unavailable (%s); parsing serially", e)
+        return _with_progress(_serial())
 
 
 def parse_all_documents(
     data_dir: str,
     extractor: MetadataExtractor | None = None,
+    max_workers: int | None = None,
 ) -> list[ParsedDocument]:
     """Parse all documents in the given directory.
 
     Args:
         data_dir: Path to directory containing document files.
         extractor: Metadata extractor to use. Defaults to QMSFilenameExtractor.
+        max_workers: Worker processes used for text extraction. Defaults to the
+            core count (capped at 8); 1 forces serial parsing.
     """
     data_path = Path(data_dir)
     if not data_path.is_dir():
@@ -259,41 +202,41 @@ def parse_all_documents(
     if extractor is None:
         extractor = QMSFilenameExtractor()
 
-    docs: list[ParsedDocument] = []
     entries = sorted(entry for entry in data_path.iterdir() if entry.is_file())
-    total_entries = len(entries)
 
-    for processed, entry in enumerate(entries, start=1):
+    metas: list[dict | None] = []
+    tasks: list[tuple[str, str]] = []
+    for entry in entries:
         meta = extractor.parse(entry.name)
         if meta is not None:
-            filepath = str(entry)
-            body = ""
-            sections: list[str] = []
+            meta["filepath"] = str(entry)
+        metas.append(meta)
+        # Unparsed filenames keep a task so progress still counts every entry;
+        # an unsupported format extracts to empty text without reading the file.
+        tasks.append((str(entry), meta["file_format"] if meta else ""))
 
-            if meta["file_format"] == "docx":
-                body, sections = extract_docx_text(filepath)
-            elif meta["file_format"] == "xlsx":
-                body, sections = extract_xlsx_text(filepath)
+    extracted = _extract_all_texts(
+        tasks, total_entries=len(entries), max_workers=max_workers
+    )
 
-            docs.append(
-                ParsedDocument(
-                    doc_id=meta["doc_id"],
-                    doc_type=meta["doc_type"],
-                    doc_type_label=meta["doc_type_label"],
-                    title=meta["title"],
-                    revision=meta["revision"],
-                    is_obsolete=meta["is_obsolete"],
-                    is_signed=meta["is_signed"],
-                    file_format=meta["file_format"],
-                    filename=meta["filename"],
-                    filepath=filepath,
-                    body=body,
-                    sections=sections,
-                )
-            )
-
-        if processed % PARSE_PROGRESS_INTERVAL == 0 or processed == total_entries:
-            logger.info("Parsing documents: %d/%d", processed, total_entries)
+    docs = [
+        ParsedDocument(
+            doc_id=meta["doc_id"],
+            doc_type=meta["doc_type"],
+            doc_type_label=meta["doc_type_label"],
+            title=meta["title"],
+            revision=meta["revision"],
+            is_obsolete=meta["is_obsolete"],
+            is_signed=meta["is_signed"],
+            file_format=meta["file_format"],
+            filename=meta["filename"],
+            filepath=meta["filepath"],
+            body=body,
+            sections=sections,
+        )
+        for meta, (body, sections) in zip(metas, extracted)
+        if meta is not None
+    ]
 
     logger.info("Parsed %d documents from %s", len(docs), data_dir)
     return docs
@@ -395,6 +338,7 @@ def build_index(
     section_collection = client.create_collection(
         name="sections",
         metadata={"hnsw:space": "cosine"},
+        embedding_function=ONNXMiniLM_L6_V2(),
     )
 
     section_ids: list[str] = []
