@@ -288,7 +288,20 @@ def deduplicate_document_revisions(
 
 
 def determine_latest_revisions(docs: list[ParsedDocument]) -> dict[str, str]:
-    """For each doc_id, determine which revision letter is the latest (highest non-obsolete)."""
+    """For each doc_id, map to its latest revision letter: the highest non-obsolete revision.
+
+    A doc_id with at least one non-obsolete revision maps to the max of those
+    non-obsolete revisions. A doc_id whose every revision is obsolete is OMITTED
+    from the returned map entirely, rather than falling back to the max obsolete
+    revision.
+
+    Why: a fully-obsolete document has no "current" revision. Flagging one of its
+    obsolete revisions as latest would surface a retired document as if it were
+    live in latest_only searches. Callers set is_latest via
+    ``latest_map.get(doc_id) == revision``, so an absent doc_id yields
+    is_latest=False for all of its revisions -- exactly the desired result.
+    Revision-specific reads are unaffected because they do not depend on is_latest.
+    """
     id_revisions: dict[str, list[tuple[str, bool]]] = {}
     for doc in docs:
         id_revisions.setdefault(doc.doc_id, []).append((doc.revision, doc.is_obsolete))
@@ -298,8 +311,6 @@ def determine_latest_revisions(docs: list[ParsedDocument]) -> dict[str, str]:
         non_obsolete = [(r, obs) for r, obs in revisions if not obs]
         if non_obsolete:
             latest[doc_id] = max(non_obsolete, key=lambda x: x[0])[0]
-        else:
-            latest[doc_id] = max(revisions, key=lambda x: x[0])[0]
 
     return latest
 
